@@ -11,9 +11,10 @@ env:
 jobs:
   deploy-and-test:
     runs-on: self-hosted
-defaults:
+    defaults:
       run:
         shell: bash
+        working-directory: D:\уник\введение в девопс\project
 
     steps:
       - name: Checkout code
