@@ -1,0 +1,7 @@
+.env
+*.log
+deployment-logs.txt
+docker-ps.txt
+docker-images.txt
+test-report.md
+db_data/
