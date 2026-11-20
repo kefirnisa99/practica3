@@ -11,11 +11,11 @@ env:
 jobs:
   deploy-and-test:
     runs-on: self-hosted
-    
-    # ЭТА СТРОКА ЗАСТАВИТ ИСПОЛЬЗОВАТЬ GIT BASH ДЛЯ ВСЕХ ШАГОВ
+
+    # Принудительно используем PowerShell для всех шагов
     defaults:
       run:
-        shell: bash
+        shell: powershell
 
     steps:
       - name: Checkout code
@@ -23,84 +23,102 @@ jobs:
 
       - name: Create .env file from secrets
         run: |
-          echo "Creating .env file from GitHub Secrets..."
-          cat > .env << EOF
+          Write-Host "Creating .env file..."
+          $content = @"
           DB_USER=${{ secrets.DB_USER }}
           DB_PASSWORD=${{ secrets.DB_PASSWORD }}
           DB_NAME=${{ secrets.DB_NAME }}
-          COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
-          EOF
-          echo ".env created"
+          COMPOSE_PROJECT_NAME=${{ env.COMPOSE_PROJECT_NAME }}
+          "@
+          $content | Out-File -FilePath .env -Encoding utf8 -NoNewline
+          Write-Host ".env created"
 
       - name: Deploy with Docker Compose
         run: |
           docker compose up -d --build
-          sleep 10
+          Start-Sleep -Seconds 10
           docker compose ps
 
       - name: Verify containers are running
         run: |
-          if docker compose ps --status running | grep -q "app" && docker compose ps --status running | grep -q "app-db"; then
-            echo "All containers are running"
-          else
-            echo "Containers failed to start"
-            docker compose logs
-            exit 1
-          fi
+          $ps = docker compose ps --status running
+          if ($ps -match "app" -and $ps -match "app-db") {
+              Write-Host "All containers are running"
+          } else {
+              Write-Host "Containers failed to start"
+              docker compose logs
+              exit 1
+          }
 
       - name: "Test 1: application & DB connectivity"
         run: |
-          echo "1. Testing application and database connectivity..."
-          for i in $(seq 1 20); do
-            if curl -fsS http://localhost:8080/health >/dev/null 2>&1 || curl -fsS http://localhost:8080/ >/dev/null 2>&1; then
-              echo "Web application is up"
-              break
-            fi
-            echo "waiting for app... ($i)"; sleep 2
-          done
+          Write-Host "1. Testing application and database connectivity..."
+          $appUp = $false
+          for ($i=1; $i -le 20; $i++) {
+              try {
+                  $res = Invoke-WebRequest -Uri "http://localhost:8080/health" -UseBasicParsing -ErrorAction Stop
+                  $appUp = $true
+                  break
+              } catch {
+                  Write-Host "waiting for app... ($i)"
+                  Start-Sleep -Seconds 2
+              }
+          }
+          
+          if (-not $appUp) {
+              Write-Host "App is not responding. Trying root path..."
+              try {
+                  $res = Invoke-WebRequest -Uri "http://localhost:8080/" -UseBasicParsing -ErrorAction Stop
+                  $appUp = $true
+              } catch {
+                  Write-Host "App failed to start"
+                  docker compose logs app
+                  exit 1
+              }
+          }
 
-          API_RESPONSE=$(curl -fsS http://localhost:8080/api/items) || { echo "API request failed"; docker compose logs app; exit 1; }
-          echo "API response: $API_RESPONSE"
-          echo "Application database connection working"
+          $apiResponse = Invoke-RestMethod -Uri "http://localhost:8080/api/items"
+          Write-Host "API response received"
+          Write-Host "Application database connection working"
 
       - name: "Test 2: data consistency (DB vs Web API)"
         run: |
-          echo "2. Testing data consistency..."
-          DB_COUNT=$(docker compose exec -T db psql -U "${{ secrets.DB_USER }}" -d "${{ secrets.DB_NAME }}" -t -c "SELECT COUNT(*) FROM items;" | tr -d ' \n')
-          WEB_COUNT=$(curl -fsS http://localhost:8080/api/items | python -c 'import sys,json; print(len(json.load(sys.stdin)))')
+          Write-Host "2. Testing data consistency..."
+          $dbCountRaw = docker compose exec -T db psql -U "${{ secrets.DB_USER }}" -d "${{ secrets.DB_NAME }}" -t -c "SELECT COUNT(*) FROM items;"
+          $dbCount = $dbCountRaw.Trim()
+          
+          $apiItems = Invoke-RestMethod -Uri "http://localhost:8080/api/items"
+          $webCount = $apiItems.Count
 
-          echo "Database count: $DB_COUNT"
-          echo "Web API count: $WEB_COUNT"
+          Write-Host "Database count: $dbCount"
+          Write-Host "Web API count: $webCount"
 
-          if [ "$DB_COUNT" = "$WEB_COUNT" ] && [ "$DB_COUNT" != "" ]; then
-            echo "Data consistency test passed"
-          else
-            echo "Data consistency test failed"
-            exit 1
-          fi
+          if ($dbCount -eq $webCount -and $dbCount -ne "") {
+              Write-Host "Data consistency test passed"
+          } else {
+              Write-Host "Data consistency test failed"
+              exit 1
+          }
 
       - name: Collect logs
         if: always()
         run: |
-          docker compose logs > deployment-logs.txt || true
-          docker compose ps -a > docker-ps.txt || true
-          docker images > docker-images.txt || true
+          docker compose logs > deployment-logs.txt
+          docker compose ps -a > docker-ps.txt
+          docker images > docker-images.txt
 
       - name: Create test report
         if: always()
         run: |
-          cat > test-report.md << EOF
+          $report = @"
           # Deployment Test Report
-          - Date: $(date)
+          - Date: $(Get-Date)
           - Application: Healthy
           - Database: Connected
           - Data Consistency: Passed
           - Containers: Running
-
-          ## Test Results
-          - Database records: ${DB_COUNT:-n/a}
-          - Web API records: ${WEB_COUNT:-n/a}
-          EOF
+          "@
+          $report | Out-File -FilePath test-report.md -Encoding utf8
 
       - name: Upload artifacts
         if: always()
@@ -117,4 +135,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: docker compose down -v || true
+        run: docker compose down -v
