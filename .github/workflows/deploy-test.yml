@@ -28,7 +28,7 @@ jobs:
           DB_USER=${{ secrets.DB_USER }}
           DB_PASSWORD=${{ secrets.DB_PASSWORD }}
           DB_NAME=${{ secrets.DB_NAME }}
-          COMPOSE_PROJECT_NAME=${{ env.COMPOSE_PROJECT_NAME }}
+          COMPOSE_PROJECT_NAME=$env:COMPOSE_PROJECT_NAME
           "@
           $content | Out-File -FilePath .env -Encoding utf8 -NoNewline
           Write-Host ".env created"
