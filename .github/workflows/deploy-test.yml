@@ -11,14 +11,17 @@ env:
 jobs:
   deploy-and-test:
     runs-on: self-hosted
+    
+    # ЭТА СТРОКА ЗАСТАВИТ ИСПОЛЬЗОВАТЬ GIT BASH ДЛЯ ВСЕХ ШАГОВ
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # --- Критерий 3: .env из секретов ---
       - name: Create .env file from secrets
-        shell: bash
         run: |
           echo "Creating .env file from GitHub Secrets..."
           cat > .env << EOF
@@ -29,16 +32,13 @@ jobs:
           EOF
           echo ".env created"
 
-      # --- Критерий 2: Docker Compose ---
       - name: Deploy with Docker Compose
-        shell: bash
         run: |
           docker compose up -d --build
           sleep 10
           docker compose ps
 
       - name: Verify containers are running
-        shell: bash
         run: |
           if docker compose ps --status running | grep -q "app" && docker compose ps --status running | grep -q "app-db"; then
             echo "All containers are running"
@@ -48,9 +48,7 @@ jobs:
             exit 1
           fi
 
-      # --- Критерий 4: тесты ---
       - name: "Test 1: application & DB connectivity"
-        shell: bash
         run: |
           echo "1. Testing application and database connectivity..."
           for i in $(seq 1 20); do
@@ -66,7 +64,6 @@ jobs:
           echo "Application database connection working"
 
       - name: "Test 2: data consistency (DB vs Web API)"
-        shell: bash
         run: |
           echo "2. Testing data consistency..."
           DB_COUNT=$(docker compose exec -T db psql -U "${{ secrets.DB_USER }}" -d "${{ secrets.DB_NAME }}" -t -c "SELECT COUNT(*) FROM items;" | tr -d ' \n')
@@ -82,10 +79,8 @@ jobs:
             exit 1
           fi
 
-      # --- Критерий 3: артефакты ---
       - name: Collect logs
         if: always()
-        shell: bash
         run: |
           docker compose logs > deployment-logs.txt || true
           docker compose ps -a > docker-ps.txt || true
@@ -93,7 +88,6 @@ jobs:
 
       - name: Create test report
         if: always()
-        shell: bash
         run: |
           cat > test-report.md << EOF
           # Deployment Test Report
@@ -121,8 +115,6 @@ jobs:
             docker-images.txt
           retention-days: 30
 
-      # --- Чистка ---
       - name: Cleanup
         if: always()
-        shell: bash
         run: docker compose down -v || true
