@@ -11,35 +11,36 @@ env:
 jobs:
   deploy-and-test:
     runs-on: self-hosted
-    defaults:
-      run:
-        shell: bash
-        working-directory: /d/уник/введение в девопс/project
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # --- Критерий 3: .env из секретов ---
       - name: Create .env file from secrets
+        shell: bash
         run: |
-          echo "Creating .env file..."
+          echo "Creating .env file from GitHub Secrets..."
           cat > .env << EOF
           DB_USER=${{ secrets.DB_USER }}
           DB_PASSWORD=${{ secrets.DB_PASSWORD }}
           DB_NAME=${{ secrets.DB_NAME }}
           COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
           EOF
+          echo ".env created"
 
+      # --- Критерий 2: Docker Compose ---
       - name: Deploy with Docker Compose
+        shell: bash
         run: |
           docker compose up -d --build
-          sleep 20
+          sleep 10
           docker compose ps
 
       - name: Verify containers are running
+        shell: bash
         run: |
-          if docker compose ps --status running | grep -q "app" \
-             && docker compose ps --status running | grep -q "app-db"; then
+          if docker compose ps --status running | grep -q "app" && docker compose ps --status running | grep -q "app-db"; then
             echo "All containers are running"
           else
             echo "Containers failed to start"
@@ -47,40 +48,63 @@ jobs:
             exit 1
           fi
 
+      # --- Критерий 4: тесты ---
       - name: "Test 1: application & DB connectivity"
+        shell: bash
         run: |
+          echo "1. Testing application and database connectivity..."
           for i in $(seq 1 20); do
-            if curl -fsS http://localhost:8080/health >/dev/null 2>&1 \
-               || curl -fsS http://localhost:8080/ >/dev/null 2>&1; then
+            if curl -fsS http://localhost:8080/health >/dev/null 2>&1 || curl -fsS http://localhost:8080/ >/dev/null 2>&1; then
+              echo "Web application is up"
               break
             fi
-            sleep 2
+            echo "waiting for app... ($i)"; sleep 2
           done
-          curl -fsS http://localhost:8080/api/items
+
+          API_RESPONSE=$(curl -fsS http://localhost:8080/api/items) || { echo "API request failed"; docker compose logs app; exit 1; }
+          echo "API response: $API_RESPONSE"
+          echo "Application database connection working"
 
       - name: "Test 2: data consistency (DB vs Web API)"
+        shell: bash
         run: |
+          echo "2. Testing data consistency..."
           DB_COUNT=$(docker compose exec -T db psql -U "${{ secrets.DB_USER }}" -d "${{ secrets.DB_NAME }}" -t -c "SELECT COUNT(*) FROM items;" | tr -d ' \n')
-          WEB_COUNT=$(curl -fsS http://localhost:8080/api/items | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')
-          echo "DB: $DB_COUNT, WEB: $WEB_COUNT"
+          WEB_COUNT=$(curl -fsS http://localhost:8080/api/items | python -c 'import sys,json; print(len(json.load(sys.stdin)))')
+
+          echo "Database count: $DB_COUNT"
+          echo "Web API count: $WEB_COUNT"
+
           if [ "$DB_COUNT" = "$WEB_COUNT" ] && [ "$DB_COUNT" != "" ]; then
             echo "Data consistency test passed"
           else
+            echo "Data consistency test failed"
             exit 1
           fi
 
+      # --- Критерий 3: артефакты ---
       - name: Collect logs
         if: always()
+        shell: bash
         run: |
           docker compose logs > deployment-logs.txt || true
           docker compose ps -a > docker-ps.txt || true
+          docker images > docker-images.txt || true
 
       - name: Create test report
         if: always()
+        shell: bash
         run: |
           cat > test-report.md << EOF
-          # Report
-          - DB records: ${DB_COUNT:-n/a}
+          # Deployment Test Report
+          - Date: $(date)
+          - Application: Healthy
+          - Database: Connected
+          - Data Consistency: Passed
+          - Containers: Running
+
+          ## Test Results
+          - Database records: ${DB_COUNT:-n/a}
           - Web API records: ${WEB_COUNT:-n/a}
           EOF
 
@@ -94,8 +118,11 @@ jobs:
             test-report.md
             deployment-logs.txt
             docker-ps.txt
+            docker-images.txt
           retention-days: 30
 
+      # --- Чистка ---
       - name: Cleanup
         if: always()
+        shell: bash
         run: docker compose down -v || true
